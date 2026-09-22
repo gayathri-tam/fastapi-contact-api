@@ -1,4 +1,4 @@
-# Contact API
+# THIS IS THE CONTACT API MAIN FILE
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, EmailStr
 from fastapi.middleware.cors import CORSMiddleware
