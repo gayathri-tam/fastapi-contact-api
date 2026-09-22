@@ -1,8 +1,35 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, EmailStr
+from fastapi.middleware.cors import CORSMiddleware
+from pymongo import MongoClient, ReturnDocument
+import os
+
 
 app = FastAPI()
 
+
+# CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# MongoDB connection
+MONGODB_URL = os.getenv("MONGODB_URL")
+
+if not MONGODB_URL:
+    raise RuntimeError("MONGODB_URL environment variable is not set")
+
+
+client = MongoClient(MONGODB_URL)
+
+db = client["contacts_db"]
+contacts_collection = db["contacts"]
+counters_collection = db["counters"]
 
 
 class Contact(BaseModel):
@@ -20,9 +47,6 @@ class Contact(BaseModel):
         pattern=r"^[0-9]+$"
     )
 
-contacts = []
-next_id = 1
-
 
 @app.get("/")
 def home():
@@ -32,18 +56,25 @@ def home():
 # CREATE
 @app.post("/contacts")
 def create_contact(contact: Contact):
-    global next_id
+
+    counter = counters_collection.find_one_and_update(
+        {"_id": "contact_id"},
+        {"$inc": {"sequence": 1}},
+        upsert=True,
+        return_document=ReturnDocument.AFTER
+    )
+
+    new_id = counter["sequence"]
 
     new_contact = {
-        "id": next_id,
+        "id": new_id,
         "first_name": contact.first_name,
         "last_name": contact.last_name,
-        "email": contact.email,
+        "email": str(contact.email),
         "contact_number": contact.contact_number
     }
 
-    contacts.append(new_contact)
-    next_id += 1
+    contacts_collection.insert_one(new_contact)
 
     return {
         "message": "Contact created successfully",
@@ -54,6 +85,14 @@ def create_contact(contact: Contact):
 # READ ALL
 @app.get("/contacts")
 def get_contacts():
+
+    contacts = list(
+        contacts_collection.find(
+            {},
+            {"_id": 0}
+        )
+    )
+
     return contacts
 
 
@@ -61,43 +100,68 @@ def get_contacts():
 @app.get("/contacts/{contact_id}")
 def get_contact(contact_id: int):
 
-    for contact in contacts:
-        if contact["id"] == contact_id:
-            return contact
+    contact = contacts_collection.find_one(
+        {"id": contact_id},
+        {"_id": 0}
+    )
 
-    raise HTTPException(status_code=404, detail="Contact not found")
+    if contact:
+        return contact
+
+    raise HTTPException(
+        status_code=404,
+        detail="Contact not found"
+    )
+
 
 # UPDATE
 @app.put("/contacts/{contact_id}")
-def update_contact(contact_id: int, contact: Contact):
+def update_contact(
+    contact_id: int,
+    contact: Contact
+):
 
-    for existing_contact in contacts:
-        if existing_contact["id"] == contact_id:
-
-            existing_contact["first_name"] = contact.first_name
-            existing_contact["last_name"] = contact.last_name
-            existing_contact["email"] = contact.email
-            existing_contact["contact_number"] = contact.contact_number
-
-            return {
-                "message": "Contact updated successfully",
-                "contact": existing_contact
+    updated_contact = contacts_collection.find_one_and_update(
+        {"id": contact_id},
+        {
+            "$set": {
+                "first_name": contact.first_name,
+                "last_name": contact.last_name,
+                "email": str(contact.email),
+                "contact_number": contact.contact_number
             }
+        },
+        return_document=ReturnDocument.AFTER
+    )
 
-    raise HTTPException(status_code=404, detail="Contact not found")
+    if updated_contact:
+
+        updated_contact.pop("_id", None)
+
+        return {
+            "message": "Contact updated successfully",
+            "contact": updated_contact
+        }
+
+    raise HTTPException(
+        status_code=404,
+        detail="Contact not found"
+    )
+
 
 # DELETE
 @app.delete("/contacts/{contact_id}")
 def delete_contact(contact_id: int):
 
-    for contact in contacts:
-        if contact["id"] == contact_id:
+    result = contacts_collection.delete_one(
+        {"id": contact_id}
+    )
 
-            contacts.remove(contact)
+    if result.deleted_count == 1:
 
-            return {
-                "message": "Contact deleted successfully"
-            }
+        return {
+            "message": "Contact deleted successfully"
+        }
 
     raise HTTPException(
         status_code=404,
